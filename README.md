@@ -1,6 +1,6 @@
-# Speed Reader
+# OmaRead
 
-![Speed Reader](preview.png)
+![OmaRead](preview.png)
 
 An Omarchy shell plugin that speed-reads text one word at a time in a
 centered, themed card. Point it at the clipboard, highlighted text, or a
@@ -30,24 +30,27 @@ empty it falls back to the highlighted (primary) selection.
 ## Install
 
 ```bash
-omarchy plugin add https://github.com/rmc507/omarchy-speed-reader.git --enable
+omarchy plugin add https://github.com/rmc507/omaread.git --enable
 ```
 
 Then add a keybinding to `~/.config/hypr/bindings.lua`:
 
 ```lua
-o.bind("SUPER + SHIFT + T", "Speed read clipboard", "omarchy-shell shell toggle io.github.rmc507.speed-reader '{}'")
+o.bind("SUPER + SHIFT + T", "OmaRead", "omarchy-shell shell toggle io.github.rmc507.omaread '{}'")
 ```
 
 ### Dependencies
 
-- `wl-clipboard`, `curl` and `python3`, all of which ship with Omarchy.
+- `wl-clipboard` and `python3`, both of which ship with Omarchy.
 - Optional: the [`defuddle`](https://github.com/kepano/defuddle) CLI. When it
   is on your `PATH`, webpages are cleaned with it; otherwise a built-in
   extractor keeps the page's `<article>`/`<main>` text.
 
 The plugin only reads `~/.config/omarchy/shell.json`; it never writes to your
 configuration. Webpages are downloaded as HTML and read as text, never run.
+Only public http(s) addresses are fetched (links to localhost or your local
+network are refused, including via redirects), proxy settings are ignored,
+and downloads stop at 5 MB.
 
 ## Configure
 
@@ -57,7 +60,7 @@ apply on save. All three are optional:
 ```jsonc
 "plugins": [
   {
-    "id": "io.github.rmc507.speed-reader",
+    "id": "io.github.rmc507.omaread",
     "wpm": 400,          // words per minute (60–1500)
     "source": "auto",    // auto | clipboard | selection
     "fontSize": 0        // word size in px; 0 follows the theme
@@ -75,10 +78,10 @@ The summon payload can override the source, so other bindings or scripts can
 read something specific:
 
 ```bash
-omarchy-shell shell toggle io.github.rmc507.speed-reader '{"source":"selection"}'
-omarchy-shell shell toggle io.github.rmc507.speed-reader '{"url":"https://example.com/post"}'
-omarchy-shell shell toggle io.github.rmc507.speed-reader '{"file":"~/Books/novel.epub"}'
-omarchy-shell shell toggle io.github.rmc507.speed-reader '{"text":"Read this.","title":"Note","wpm":400}'
+omarchy-shell shell toggle io.github.rmc507.omaread '{"source":"selection"}'
+omarchy-shell shell toggle io.github.rmc507.omaread '{"url":"https://example.com/post"}'
+omarchy-shell shell toggle io.github.rmc507.omaread '{"file":"~/Books/novel.epub"}'
+omarchy-shell shell toggle io.github.rmc507.omaread '{"text":"Read this.","title":"Note","wpm":400}'
 ```
 
 Files can be `.txt`, `.md`, `.html` or `.epub`. EPUBs are read in spine
@@ -106,7 +109,7 @@ version, run `omarchy restart shell`.
 ## Uninstall
 
 ```bash
-omarchy plugin remove io.github.rmc507.speed-reader
+omarchy plugin remove io.github.rmc507.omaread
 ```
 
 Then delete the `SUPER + SHIFT + T` binding from `~/.config/hypr/bindings.lua`.

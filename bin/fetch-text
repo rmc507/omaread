@@ -17,21 +17,32 @@ Uses only the standard library; defuddle is used for webpages when found.
 """
 
 import html
+import http.client
+import ipaddress
 import json
 import os
 import re
 import shutil
+import socket
+import ssl
 import subprocess
 import sys
 import tempfile
+import time
 import zipfile
 from html.parser import HTMLParser
 from pathlib import Path, PurePosixPath
+from urllib.parse import urljoin, urlsplit
 
 USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/131.0 Safari/537.36"
 )
+MAX_PAGE_BYTES = 5 * 1024 * 1024    # stop downloading past this
+MAX_FILE_BYTES = 20 * 1024 * 1024   # refuse larger local files
+MAX_TEXT_CHARS = 2_000_000          # ~300k words; the rest is dropped
+MAX_REDIRECTS = 5
+FETCH_TIMEOUT = 20                  # seconds for the whole download
 URL_RE = re.compile(r"^https?://\S+$", re.IGNORECASE)
 
 # The shell may run us with a minimal PATH, so also look where user-level
@@ -205,12 +216,118 @@ def paste(primary: bool = False) -> str:
         return ""  # empty clipboard makes wl-paste exit non-zero
 
 
+def is_public_ip(value: str) -> bool:
+    ip = ipaddress.ip_address(value.split("%")[0])
+    if ip.version == 6 and ip.ipv4_mapped:
+        ip = ip.ipv4_mapped
+    return ip.is_global and not ip.is_multicast
+
+
+def public_addresses(host: str, port: int) -> list[str]:
+    """Resolve host and refuse it unless every address is public."""
+    try:
+        infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except (socket.gaierror, UnicodeError):
+        raise Fail(f"Could not resolve host: {host}")
+    addresses = []
+    for info in infos:
+        address = info[4][0]
+        if not is_public_ip(address):
+            raise Fail(f"Refusing non-public address for {host}")
+        if address not in addresses:
+            addresses.append(address)
+    if not addresses:
+        raise Fail(f"Could not resolve host: {host}")
+    return addresses
+
+
+class PinnedHTTPConnection(http.client.HTTPConnection):
+    """Connects to an already-checked IP while sending the real Host header."""
+
+    def __init__(self, host, port, address, timeout):
+        super().__init__(host, port, timeout=timeout)
+        self.address = address
+
+    def connect(self):
+        self.sock = socket.create_connection((self.address, self.port), self.timeout)
+
+
+class PinnedHTTPSConnection(http.client.HTTPSConnection):
+    def __init__(self, host, port, address, timeout):
+        super().__init__(host, port, timeout=timeout, context=ssl.create_default_context())
+        self.address = address
+
+    def connect(self):
+        sock = socket.create_connection((self.address, self.port), self.timeout)
+        self.sock = self._context.wrap_socket(sock, server_hostname=self.host)
+
+
+def read_limited(response, limit: int, deadline: float) -> bytes:
+    length = response.getheader("Content-Length")
+    if length and length.isdigit() and int(length) > limit:
+        raise Fail("Page is too large")
+    chunks, total = [], 0
+    while True:
+        if time.monotonic() > deadline:
+            raise Fail("Download timed out")
+        chunk = response.read(64 * 1024)
+        if not chunk:
+            return b"".join(chunks)
+        total += len(chunk)
+        if total > limit:
+            raise Fail("Page is too large")
+        chunks.append(chunk)
+
+
 def fetch_html(url: str) -> str:
-    raw = run(
-        ["curl", "-fsSL", "--compressed", "--max-time", "20", "-A", USER_AGENT, url],
-        timeout=25,
-    )
-    return raw.decode("utf-8", errors="replace")
+    """GET a public http(s) page: every hop must resolve to public addresses,
+    proxies from the environment are not used, and the body is size-capped."""
+    deadline = time.monotonic() + FETCH_TIMEOUT
+    for _ in range(MAX_REDIRECTS + 1):
+        parts = urlsplit(url)
+        if parts.scheme not in ("http", "https") or not parts.hostname:
+            raise Fail("Only http and https links can be read")
+        port = parts.port or (443 if parts.scheme == "https" else 80)
+        path = (parts.path or "/") + (f"?{parts.query}" if parts.query else "")
+        connection_class = PinnedHTTPSConnection if parts.scheme == "https" else PinnedHTTPConnection
+
+        response = None
+        error = None
+        for address in public_addresses(parts.hostname, port):
+            remaining = max(1.0, deadline - time.monotonic())
+            conn = connection_class(parts.hostname, port, address, remaining)
+            try:
+                conn.request("GET", path, headers={
+                    "User-Agent": USER_AGENT,
+                    "Accept": "text/html,application/xhtml+xml;q=0.9,*/*;q=0.5",
+                    "Accept-Encoding": "identity",
+                })
+                response = conn.getresponse()
+                break
+            except (OSError, http.client.HTTPException) as exc:
+                error = exc
+                conn.close()
+        if response is None:
+            raise Fail(f"Could not connect to {parts.hostname}: {error}")
+
+        try:
+            if response.status in (301, 302, 303, 307, 308):
+                location = response.getheader("Location")
+                if not location:
+                    raise Fail("Redirect without a location")
+                url = urljoin(url, location)
+                continue
+            if response.status != 200:
+                raise Fail(f"HTTP {response.status} from {parts.hostname}")
+            body = read_limited(response, MAX_PAGE_BYTES, deadline)
+            charset = response.headers.get_content_charset() or "utf-8"
+            try:
+                return body.decode(charset, errors="replace")
+            except LookupError:
+                return body.decode("utf-8", errors="replace")
+        finally:
+            conn.close()
+    raise Fail("Too many redirects")
 
 
 def page_text(markup: str, extractor: str) -> tuple[str, str]:
@@ -279,6 +396,8 @@ def from_file(path_arg: str) -> tuple[str, str]:
     suffix = path.suffix.lower()
     if suffix == ".epub":
         return epub_text(path)
+    if path.stat().st_size > MAX_FILE_BYTES:
+        raise Fail("File is too large")
     content = path.read_text(encoding="utf-8", errors="replace")
     if suffix in (".html", ".htm", ".xhtml"):
         title, text = html_to_text(content, article=True)
@@ -342,6 +461,7 @@ def main(argv: list[str]) -> int:
         print(f"{type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
 
+    text = text[:MAX_TEXT_CHARS]
     sys.stdout.write(f"{normalize(title) or 'Untitled'}\n\n{text}\n")
     return 0
 

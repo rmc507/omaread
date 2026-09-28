@@ -13,7 +13,7 @@ Item {
   property var shell: null
   property var manifest: null
 
-  readonly property string pluginId: (manifest && manifest.id) || "io.github.rmc507.speed-reader"
+  readonly property string pluginId: (manifest && manifest.id) || "io.github.rmc507.omaread"
   readonly property string fetchScript: decodeURIComponent(String(Qt.resolvedUrl("bin/fetch-text")).replace(/^file:\/\//, ""))
   readonly property string shellConfigPath: Quickshell.env("HOME") + "/.config/omarchy/shell.json"
 
@@ -260,7 +260,7 @@ Item {
     visible: root.opened
     anchors { top: true; bottom: true; left: true; right: true }
     color: "transparent"
-    WlrLayershell.namespace: "io.github.rmc507.speed-reader"
+    WlrLayershell.namespace: "io.github.rmc507.omaread"
     WlrLayershell.layer: WlrLayer.Overlay
     WlrLayershell.keyboardFocus: WlrKeyboardFocus.Exclusive
     exclusionMode: ExclusionMode.Ignore

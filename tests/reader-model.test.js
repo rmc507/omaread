@@ -19,10 +19,10 @@ test("normalizeConfig keeps only wpm, source and fontSize", () => {
 })
 
 test("findEntry reads our plugins[] entry and tolerates bad JSON", () => {
-  const json = JSON.stringify({ plugins: [{ id: "other" }, { id: "io.github.rmc507.speed-reader", wpm: 420 }] })
-  assert.equal(M.findEntry(json, "io.github.rmc507.speed-reader").wpm, 420)
-  assert.deepEqual(M.findEntry("{not json", "io.github.rmc507.speed-reader"), {})
-  assert.deepEqual(M.findEntry(JSON.stringify({ bar: {} }), "io.github.rmc507.speed-reader"), {})
+  const json = JSON.stringify({ plugins: [{ id: "other" }, { id: "io.github.rmc507.omaread", wpm: 420 }] })
+  assert.equal(M.findEntry(json, "io.github.rmc507.omaread").wpm, 420)
+  assert.deepEqual(M.findEntry("{not json", "io.github.rmc507.omaread"), {})
+  assert.deepEqual(M.findEntry(JSON.stringify({ bar: {} }), "io.github.rmc507.omaread"), {})
 })
 
 test("parseFetchOutput splits title from body", () => {
