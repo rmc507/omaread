@@ -1,0 +1,350 @@
+#!/usr/bin/python3
+"""Print readable plain text for the speed reader.
+
+Usage:
+    fetch-text auto                 clipboard (a URL is fetched as a page), else selection
+    fetch-text clipboard            clipboard text as-is (a URL is fetched as a page)
+    fetch-text selection            primary selection (highlighted text)
+    fetch-text url <url>            article text of a webpage
+    fetch-text file <path>          .txt / .md / .html / .epub
+
+Options:
+    --extractor auto|defuddle|builtin   how webpages are cleaned (default: auto)
+
+The first line of output is a title, then a blank line, then the text.
+Paragraphs are separated by blank lines. Errors go to stderr with exit 1.
+Uses only the standard library; defuddle is used for webpages when found.
+"""
+
+import html
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import zipfile
+from html.parser import HTMLParser
+from pathlib import Path, PurePosixPath
+
+USER_AGENT = (
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/131.0 Safari/537.36"
+)
+URL_RE = re.compile(r"^https?://\S+$", re.IGNORECASE)
+
+# The shell may run us with a minimal PATH, so also look where user-level
+# node tools (defuddle) usually live.
+EXTRA_PATHS = [
+    "~/.local/share/mise/shims",
+    "~/.local/bin",
+    "~/.bun/bin",
+    "~/.npm-global/bin",
+]
+
+SKIP_TAGS = {
+    "script", "style", "noscript", "template", "svg", "canvas", "iframe",
+    "nav", "header", "footer", "aside", "form", "button", "select", "input",
+    "textarea", "figure", "menu", "dialog",
+}
+BLOCK_TAGS = {
+    "p", "div", "section", "article", "main", "hr", "li", "ul", "ol",
+    "dl", "dt", "dd", "blockquote", "pre", "table", "tr", "td", "th",
+    "h1", "h2", "h3", "h4", "h5", "h6", "figcaption", "body",
+}
+VOID_TAGS = {
+    "area", "base", "br", "col", "embed", "hr", "img", "input", "link",
+    "meta", "source", "track", "wbr",
+}
+
+
+class Fail(Exception):
+    pass
+
+
+class TextExtractor(HTMLParser):
+    """Turn HTML into paragraphs of plain text.
+
+    With article=True only the text inside the first <article>, or failing
+    that <main> / role="main", is kept (when the page has one).
+    """
+
+    def __init__(self, article: bool = False):
+        super().__init__(convert_charrefs=True)
+        self.article = article
+        self.title = ""
+        self.paragraphs = []                    # whole-page paragraphs
+        self._scoped = {"article": [], "main": []}
+        self._done = set()                      # scopes already closed
+        self._stack = []                        # (tag, scope key or None)
+        self._skip = 0                          # depth inside SKIP_TAGS
+        self._in_title = False
+        self._line = []
+
+    def _open_scopes(self):
+        return {key for _, key in self._stack if key}
+
+    def _flush(self):
+        text = re.sub(r"\s+", " ", "".join(self._line)).strip()
+        self._line = []
+        if not text:
+            return
+        self.paragraphs.append(text)
+        for key in self._open_scopes():
+            self._scoped[key].append(text)
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "title":
+            self._in_title = True
+        elif tag in SKIP_TAGS:
+            if tag not in VOID_TAGS:
+                self._skip += 1
+        elif self._skip:
+            return
+        else:
+            if tag == "br":
+                self._line.append(" ")
+            if tag in BLOCK_TAGS:
+                self._flush()
+            if tag in VOID_TAGS:
+                return
+            key = None
+            if tag == "article":
+                key = "article"
+            elif tag == "main" or dict(attrs).get("role") == "main":
+                key = "main"
+            if key and (key in self._done or key in self._open_scopes()):
+                key = None
+            self._stack.append((tag, key))
+
+    def handle_startendtag(self, tag, attrs):
+        if self._skip:
+            return
+        if tag == "br":
+            self._line.append(" ")
+        elif tag in BLOCK_TAGS:
+            self._flush()
+
+    def handle_endtag(self, tag):
+        if tag == "title":
+            self._in_title = False
+        elif tag in SKIP_TAGS:
+            self._skip = max(0, self._skip - 1)
+        elif self._skip:
+            return
+        else:
+            if tag in BLOCK_TAGS:
+                self._flush()
+            # Pop to the matching open tag; stray end tags are ignored.
+            if any(t == tag for t, _ in self._stack):
+                while self._stack:
+                    open_tag, key = self._stack.pop()
+                    if key:
+                        self._done.add(key)
+                    if open_tag == tag:
+                        break
+
+    def handle_data(self, data):
+        if self._in_title:
+            self.title += data
+        elif not self._skip:
+            self._line.append(data)
+
+    def result(self):
+        self.close()
+        self._flush()
+        if self.article:
+            for key in ("article", "main"):
+                # Ignore tiny <article> teasers; fall through to the whole page.
+                if sum(len(p) for p in self._scoped[key]) > 200:
+                    return self._scoped[key]
+        return self.paragraphs
+
+
+def html_to_text(markup: str, article: bool = False) -> tuple[str, str]:
+    parser = TextExtractor(article=article)
+    parser.feed(markup)
+    paragraphs = parser.result()
+    return re.sub(r"\s+", " ", parser.title).strip(), "\n\n".join(paragraphs)
+
+
+def normalize(text: str) -> str:
+    """Collapse runs of spaces, keep blank-line paragraph breaks."""
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    paragraphs = re.split(r"\n\s*\n", text)
+    cleaned = [re.sub(r"\s+", " ", p).strip() for p in paragraphs]
+    return "\n\n".join(p for p in cleaned if p)
+
+
+def which(name: str) -> str | None:
+    extra = os.pathsep.join(os.path.expanduser(p) for p in EXTRA_PATHS)
+    return shutil.which(name, path=os.environ.get("PATH", "") + os.pathsep + extra)
+
+
+def run(argv: list[str], timeout: float = 20, data: bytes | None = None) -> bytes:
+    try:
+        proc = subprocess.run(argv, input=data, capture_output=True, timeout=timeout)
+    except FileNotFoundError:
+        raise Fail(f"{argv[0]} is not installed")
+    except subprocess.TimeoutExpired:
+        raise Fail(f"{os.path.basename(argv[0])} timed out")
+    if proc.returncode != 0:
+        detail = proc.stderr.decode(errors="replace").strip().splitlines()
+        raise Fail(detail[-1] if detail else f"{argv[0]} failed")
+    return proc.stdout
+
+
+def paste(primary: bool = False) -> str:
+    argv = ["wl-paste", "--no-newline", "--type", "text"]
+    if primary:
+        argv.insert(1, "--primary")
+    try:
+        return run(argv, timeout=5).decode(errors="replace")
+    except Fail:
+        return ""  # empty clipboard makes wl-paste exit non-zero
+
+
+def fetch_html(url: str) -> str:
+    raw = run(
+        ["curl", "-fsSL", "--compressed", "--max-time", "20", "-A", USER_AGENT, url],
+        timeout=25,
+    )
+    return raw.decode("utf-8", errors="replace")
+
+
+def page_text(markup: str, extractor: str) -> tuple[str, str]:
+    if extractor in ("auto", "defuddle"):
+        defuddle = which("defuddle")
+        if defuddle:
+            with tempfile.NamedTemporaryFile("w", suffix=".html", encoding="utf-8") as f:
+                f.write(markup)
+                f.flush()
+                try:
+                    data = json.loads(run([defuddle, "parse", f.name, "--json"], timeout=30))
+                    title, text = html_to_text(data.get("content") or "")
+                    if len(text) > 200:
+                        return data.get("title") or title or html_to_text(markup)[0], text
+                except (Fail, ValueError):
+                    if extractor == "defuddle":
+                        raise
+        elif extractor == "defuddle":
+            raise Fail("defuddle is not installed")
+    return html_to_text(markup, article=True)
+
+
+def from_url(url: str, extractor: str) -> tuple[str, str]:
+    title, text = page_text(fetch_html(url), extractor)
+    return title or url, text
+
+
+def epub_text(path: Path) -> tuple[str, str]:
+    """Read an EPUB in spine (reading) order."""
+    with zipfile.ZipFile(path) as zf:
+        container = zf.read("META-INF/container.xml").decode("utf-8", "replace")
+        match = re.search(r'full-path="([^"]+)"', container)
+        if not match:
+            raise Fail("EPUB has no package file")
+        opf_path = PurePosixPath(match.group(1))
+        opf = zf.read(str(opf_path)).decode("utf-8", "replace")
+
+        title_match = re.search(r"<dc:title[^>]*>(.*?)</dc:title>", opf, re.S)
+        title = html.unescape(title_match.group(1)).strip() if title_match else path.stem
+
+        manifest = {}
+        for item in re.finditer(r"<item\b[^>]*>", opf):
+            attrs = dict(re.findall(r'([\w:-]+)="([^"]*)"', item.group(0)))
+            if "id" in attrs and "href" in attrs:
+                manifest[attrs["id"]] = attrs["href"]
+        spine = re.findall(r'<itemref\b[^>]*idref="([^"]+)"', opf)
+
+        chapters = []
+        for idref in spine:
+            href = manifest.get(idref)
+            if not href:
+                continue
+            member = str(opf_path.parent / html.unescape(href).split("#")[0])
+            try:
+                chapter = zf.read(member).decode("utf-8", "replace")
+            except KeyError:
+                continue
+            chapters.append(html_to_text(chapter)[1])
+        return title, "\n\n".join(c for c in chapters if c)
+
+
+def from_file(path_arg: str) -> tuple[str, str]:
+    path = Path(os.path.expanduser(path_arg))
+    if not path.is_file():
+        raise Fail(f"File not found: {path_arg}")
+    suffix = path.suffix.lower()
+    if suffix == ".epub":
+        return epub_text(path)
+    content = path.read_text(encoding="utf-8", errors="replace")
+    if suffix in (".html", ".htm", ".xhtml"):
+        title, text = html_to_text(content, article=True)
+        return title or path.stem, text
+    return path.name, content
+
+
+def from_clipboard(text: str, extractor: str) -> tuple[str, str]:
+    stripped = text.strip()
+    if URL_RE.match(stripped):
+        return from_url(stripped, extractor)
+    return "Clipboard", text
+
+
+def main(argv: list[str]) -> int:
+    extractor = "auto"
+    args = []
+    it = iter(argv)
+    for arg in it:
+        if arg == "--extractor":
+            extractor = next(it, "auto")
+        elif arg.startswith("--extractor="):
+            extractor = arg.split("=", 1)[1]
+        else:
+            args.append(arg)
+    if extractor not in ("auto", "defuddle", "builtin"):
+        extractor = "auto"
+
+    source = args[0] if args else "auto"
+    target = args[1] if len(args) > 1 else ""
+
+    try:
+        if source == "auto":
+            clip = paste()
+            if clip.strip():
+                title, text = from_clipboard(clip, extractor)
+            else:
+                title, text = "Selection", paste(primary=True)
+        elif source == "clipboard":
+            title, text = from_clipboard(paste(), extractor)
+        elif source == "selection":
+            title, text = "Selection", paste(primary=True)
+        elif source == "url":
+            if not target:
+                raise Fail("No URL given")
+            title, text = from_url(target, extractor)
+        elif source == "file":
+            if not target:
+                raise Fail("No file given")
+            title, text = from_file(target)
+        else:
+            raise Fail(f"Unknown source: {source}")
+
+        text = normalize(text)
+        if not text:
+            raise Fail("Nothing to read")
+    except Fail as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    except Exception as exc:  # keep the overlay's error line short and readable
+        print(f"{type(exc).__name__}: {exc}", file=sys.stderr)
+        return 1
+
+    sys.stdout.write(f"{normalize(title) or 'Untitled'}\n\n{text}\n")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
