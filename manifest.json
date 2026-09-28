@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.rmc507.speed-reader",
   "name": "Speed Reader",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "author": "rmc507",
   "description": "Speed-read the clipboard, highlighted text, or a copied webpage link one word at a time in a centered, themed card.",
   "kinds": [

@@ -52,28 +52,22 @@ configuration. Webpages are downloaded as HTML and read as text, never run.
 ## Configure
 
 Settings live on the plugin's entry in `~/.config/omarchy/shell.json` and
-apply on save. Every key is optional:
+apply on save. All three are optional:
 
 ```jsonc
 "plugins": [
   {
     "id": "io.github.rmc507.speed-reader",
-    "wpm": 300,               // words per minute (60–1500)
-    "wpmStep": 25,            // change per ↑/↓ press
-    "source": "auto",         // auto | clipboard | selection
-    "extractor": "auto",      // auto | defuddle | builtin (webpages)
-    "fontSize": 0,            // word size in px; 0 follows the theme
-    "width": 0,               // card width in px; 0 follows the theme
-    "focusPosition": 0.5,     // focus column across the card, 0.2–0.8
-    "punctuationPause": 2.0,  // hold multiplier at sentence ends (half at , ; :)
-    "longWordPause": 1.4,     // hold multiplier for long words
-    "longWordLength": 8,      // letters before a word counts as long
-    "startDelay": 800         // ms to hold the first word
+    "wpm": 400,          // words per minute (60–1500)
+    "source": "auto",    // auto | clipboard | selection
+    "fontSize": 0        // word size in px; 0 follows the theme
   }
 ]
 ```
 
-Speed changes made with the arrow keys last until the card is closed.
+Reading pauses briefly at punctuation and paragraph ends, so the real pace
+is a little under the set speed. Changes made with the arrow keys last until
+the card is closed.
 
 ## Other ways to open it
 

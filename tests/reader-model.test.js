@@ -7,18 +7,15 @@ const path = require("node:path")
 
 const source = fs.readFileSync(path.join(__dirname, "..", "ReaderModel.js"), "utf8")
   .replace(/^\.pragma library\s*$/m, "")
-const M = new Function(source + "\nreturn { DEFAULTS, normalizeConfig, findEntry, parseFetchOutput, tokenize, focusIndex, splitWord, delayMs, averageDelayMs, previousSentence, nextSentence, formatDuration }")()
+const M = new Function(source + "\nreturn { DEFAULTS, START_DELAY, normalizeConfig, normalizeWpm, findEntry, parseFetchOutput, tokenize, focusIndex, splitWord, delayMs, averageDelayMs, previousSentence, nextSentence, formatDuration }")()
 
-test("normalizeConfig fills defaults and clamps", () => {
-  const cfg = M.normalizeConfig({ wpm: 5000, source: "bogus", fontSize: 4, width: "", focusPosition: 0.1 })
-  assert.equal(cfg.wpm, 1500)
-  assert.equal(cfg.source, "auto")
-  assert.equal(cfg.fontSize, 12)
-  assert.equal(cfg.width, 0)
-  assert.equal(cfg.focusPosition, 0.2)
-  assert.equal(cfg.punctuationPause, M.DEFAULTS.punctuationPause)
-  assert.deepEqual(M.normalizeConfig(null), M.normalizeConfig({}))
+test("normalizeConfig keeps only wpm, source and fontSize", () => {
+  const cfg = M.normalizeConfig({ wpm: 5000, source: "bogus", fontSize: 4, focusPosition: 0.1 })
+  assert.deepEqual(cfg, { wpm: 1500, source: "auto", fontSize: 12 })
+  assert.deepEqual(M.normalizeConfig(null), { wpm: 400, source: "auto", fontSize: 0 })
   assert.equal(M.normalizeConfig({ wpm: "450" }).wpm, 450)
+  assert.equal(M.normalizeWpm(10), 60)
+  assert.equal(M.normalizeWpm(undefined), 400)
 })
 
 test("findEntry reads our plugins[] entry and tolerates bad JSON", () => {
@@ -51,14 +48,14 @@ test("focus letter is left of centre and skips leading punctuation", () => {
 })
 
 test("delays scale with wpm, punctuation and word length", () => {
-  const cfg = M.normalizeConfig({ wpm: 300, punctuationPause: 2, longWordPause: 1.5, longWordLength: 8 })
-  assert.equal(M.delayMs({ text: "word", end: "" }, cfg, 300), 200)
-  assert.equal(M.delayMs({ text: "word,", end: "clause" }, cfg, 300), 300)
-  assert.equal(M.delayMs({ text: "word.", end: "sentence" }, cfg, 300), 400)
-  assert.equal(M.delayMs({ text: "word", end: "paragraph" }, cfg, 300), 600)
-  assert.equal(M.delayMs({ text: "extraordinary", end: "" }, cfg, 300), 300)
-  assert.equal(M.delayMs({ text: "word", end: "" }, cfg, 600), 100)
-  assert.equal(M.averageDelayMs([], cfg, 300), 0)
+  assert.equal(M.delayMs({ text: "word", end: "" }, 300), 200)
+  assert.equal(M.delayMs({ text: "word,", end: "clause" }, 300), 250)
+  assert.equal(M.delayMs({ text: "word.", end: "sentence" }, 300), 300)
+  assert.equal(M.delayMs({ text: "word", end: "paragraph" }, 300), 400)
+  assert.equal(M.delayMs({ text: "extraordinary", end: "" }, 300), 230)
+  assert.equal(M.delayMs({ text: "word", end: "" }, 600), 100)
+  assert.equal(M.averageDelayMs([], 300), 0)
+  assert.ok(M.START_DELAY <= 400)
 })
 
 test("sentence navigation", () => {

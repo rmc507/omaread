@@ -52,7 +52,7 @@ Item {
   readonly property int cornerRadius: Style.cornerRadius
   property int contentMargin: Style.spacing.panelPadding
   readonly property int wordSize: config.fontSize > 0 ? config.fontSize : Math.round(Style.font.heading * 2.75)
-  property int cardWidth: Math.min(config.width > 0 ? config.width : Style.space(560), panel.width - Style.gapsOut * 2)
+  property int cardWidth: Math.min(Style.space(560), panel.width - Style.gapsOut * 2)
   property int cardHeight: Math.min(layout.implicitHeight + card.contentTopInset + card.contentBottomInset, panel.height - Style.gapsOut * 2)
 
   function open(payloadJson) {
@@ -65,7 +65,7 @@ Item {
     root.index = 0
     root.title = ""
     root.errorText = ""
-    root.wpm = payload.wpm ? ReaderModel.normalizeConfig({ wpm: payload.wpm }).wpm : root.config.wpm
+    root.wpm = payload.wpm ? ReaderModel.normalizeWpm(payload.wpm) : root.config.wpm
     Qt.callLater(function() { keyCatcher.forceActiveFocus() })
 
     if (typeof payload.text === "string" && payload.text.trim()) {
@@ -85,7 +85,6 @@ Item {
       args.push(source)
       root.loadingText = source === "selection" ? "Reading selection…" : "Reading clipboard…"
     }
-    args.push("--extractor", root.config.extractor)
     root.fetch(args)
   }
 
@@ -153,9 +152,9 @@ Item {
     root.title = title || ""
     root.tokens = tokens
     root.index = 0
-    root.averageDelay = ReaderModel.averageDelayMs(tokens, root.config, root.wpm)
+    root.averageDelay = ReaderModel.averageDelayMs(tokens, root.wpm)
     root.status = "reading"
-    root.play(root.config.startDelay)
+    root.play(ReaderModel.START_DELAY)
   }
 
   function fail(message) {
@@ -165,7 +164,7 @@ Item {
 
   function play(extraHold) {
     root.playing = true
-    tick.interval = (extraHold || 0) + ReaderModel.delayMs(root.tokens[root.index], root.config, root.wpm)
+    tick.interval = (extraHold || 0) + ReaderModel.delayMs(root.tokens[root.index], root.wpm)
     tick.restart()
   }
 
@@ -178,7 +177,7 @@ Item {
     if (root.status === "done") {
       root.index = 0
       root.status = "reading"
-      root.play(root.config.startDelay)
+      root.play(ReaderModel.START_DELAY)
     } else if (root.status === "reading") {
       if (root.playing) root.pause()
       else root.play(0)
@@ -200,12 +199,12 @@ Item {
     root.index = Math.max(0, Math.min(nextIndex, root.tokens.length - 1))
     root.status = "reading"
     // Hold a jumped-to word a little longer so the eye can land on it.
-    if (root.playing) root.play(Math.round(root.config.startDelay / 2))
+    if (root.playing) root.play(Math.round(ReaderModel.START_DELAY / 2))
   }
 
   function setWpm(next) {
-    root.wpm = ReaderModel.normalizeConfig({ wpm: next }).wpm
-    root.averageDelay = ReaderModel.averageDelayMs(root.tokens, root.config, root.wpm)
+    root.wpm = ReaderModel.normalizeWpm(next)
+    root.averageDelay = ReaderModel.averageDelayMs(root.tokens, root.wpm)
   }
 
   function applyConfig(text) {
@@ -308,9 +307,9 @@ Item {
           } else if (key === Qt.Key_Right || key === Qt.Key_L) {
             root.seek(ReaderModel.nextSentence(root.tokens, root.index))
           } else if (key === Qt.Key_Up || key === Qt.Key_K) {
-            root.setWpm(root.wpm + root.config.wpmStep)
+            root.setWpm(root.wpm + ReaderModel.WPM_STEP)
           } else if (key === Qt.Key_Down || key === Qt.Key_J) {
-            root.setWpm(root.wpm - root.config.wpmStep)
+            root.setWpm(root.wpm - ReaderModel.WPM_STEP)
           } else if (key === Qt.Key_Home) {
             root.seek(0)
           } else {
@@ -345,7 +344,7 @@ Item {
           width: parent.width
           height: Math.round(root.wordSize * 2.2)
 
-          readonly property real focalX: Math.round(width * root.config.focusPosition)
+          readonly property real focalX: Math.round(width / 2)
           readonly property bool showWord: root.status === "reading" || (root.status === "done" && root.tokens.length > 0)
           // Shrink words that would not fit on one side of the focal column.
           readonly property real wordScale: {

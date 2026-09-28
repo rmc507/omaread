@@ -4,21 +4,22 @@
 // Kept free of QML types so tests/reader-model.test.js can run it in node.
 
 var SOURCES = ["auto", "clipboard", "selection"]
-var EXTRACTORS = ["auto", "defuddle", "builtin"]
 
+// The only user settings, set on the plugin's entry in shell.json.
 var DEFAULTS = {
-  wpm: 300,
-  wpmStep: 25,
+  wpm: 400,
   source: "auto",
-  extractor: "auto",
-  fontSize: 0,            // 0 = derive from the theme's font scale
-  width: 0,               // 0 = derive from the theme's spacing scale
-  focusPosition: 0.5,     // where the focus letter sits across the card, 0..1
-  punctuationPause: 2.0,  // delay multiplier at sentence ends
-  longWordPause: 1.4,     // delay multiplier for long words
-  longWordLength: 8,
-  startDelay: 800         // ms the first word is held before reading starts
+  fontSize: 0             // 0 = derive from the theme's font scale
 }
+
+// Fixed timing, kept light so pauses help comprehension without dragging.
+var SENTENCE_PAUSE = 1.5  // delay multiplier at . ! ?
+var CLAUSE_PAUSE = 1.25   // at , ; : and dashes
+var PARAGRAPH_PAUSE = 2   // at the end of a paragraph
+var LONG_WORD_PAUSE = 1.15
+var LONG_WORD_LENGTH = 8
+var START_DELAY = 400     // ms the first word is held before reading starts
+var WPM_STEP = 25         // change per up/down key press
 
 function num(value, fallback, min, max) {
   var n = Number(value)
@@ -30,22 +31,17 @@ function oneOf(value, list, fallback) {
   return list.indexOf(String(value)) !== -1 ? String(value) : fallback
 }
 
+function normalizeWpm(value) {
+  return Math.round(num(value, DEFAULTS.wpm, 60, 1500))
+}
+
 function normalizeConfig(raw) {
   var c = raw && typeof raw === "object" ? raw : {}
   var fontSize = num(c.fontSize, 0, 0, 240)
-  var width = num(c.width, 0, 0, 4000)
   return {
-    wpm: Math.round(num(c.wpm, DEFAULTS.wpm, 60, 1500)),
-    wpmStep: Math.round(num(c.wpmStep, DEFAULTS.wpmStep, 5, 200)),
+    wpm: normalizeWpm(c.wpm),
     source: oneOf(c.source, SOURCES, DEFAULTS.source),
-    extractor: oneOf(c.extractor, EXTRACTORS, DEFAULTS.extractor),
-    fontSize: fontSize > 0 ? Math.max(12, fontSize) : 0,
-    width: width > 0 ? Math.max(240, width) : 0,
-    focusPosition: num(c.focusPosition, DEFAULTS.focusPosition, 0.2, 0.8),
-    punctuationPause: num(c.punctuationPause, DEFAULTS.punctuationPause, 1, 5),
-    longWordPause: num(c.longWordPause, DEFAULTS.longWordPause, 1, 3),
-    longWordLength: Math.round(num(c.longWordLength, DEFAULTS.longWordLength, 3, 30)),
-    startDelay: Math.round(num(c.startDelay, DEFAULTS.startDelay, 0, 5000))
+    fontSize: fontSize > 0 ? Math.max(12, fontSize) : 0
   }
 }
 
@@ -125,20 +121,20 @@ function isSentenceEnd(token) {
   return !!token && (token.end === "sentence" || token.end === "paragraph")
 }
 
-function delayMs(token, cfg, wpm) {
+function delayMs(token, wpm) {
   var delay = 60000 / Math.max(1, wpm)
   if (!token) return delay
-  if (coreBounds(token.text).length > cfg.longWordLength) delay *= cfg.longWordPause
-  if (token.end === "paragraph") delay *= cfg.punctuationPause * 1.5
-  else if (token.end === "sentence") delay *= cfg.punctuationPause
-  else if (token.end === "clause") delay *= 1 + (cfg.punctuationPause - 1) / 2
+  if (coreBounds(token.text).length > LONG_WORD_LENGTH) delay *= LONG_WORD_PAUSE
+  if (token.end === "paragraph") delay *= PARAGRAPH_PAUSE
+  else if (token.end === "sentence") delay *= SENTENCE_PAUSE
+  else if (token.end === "clause") delay *= CLAUSE_PAUSE
   return Math.round(delay)
 }
 
-function averageDelayMs(tokens, cfg, wpm) {
+function averageDelayMs(tokens, wpm) {
   if (!tokens || tokens.length === 0) return 0
   var total = 0
-  for (var i = 0; i < tokens.length; i++) total += delayMs(tokens[i], cfg, wpm)
+  for (var i = 0; i < tokens.length; i++) total += delayMs(tokens[i], wpm)
   return total / tokens.length
 }
 
